@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation.
+// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
 using System;
@@ -78,13 +78,6 @@ namespace Microsoft.ReverseProxy.Core.RuntimeModel
             public BackendLoadBalancingOptions(LoadBalancingMode mode)
             {
                 Mode = mode;
-            }
-
-            public enum LoadBalancingMode
-            {
-                First,
-                Random,
-                PowerOfTwoChoices,
             }
 
             public LoadBalancingMode Mode { get; }

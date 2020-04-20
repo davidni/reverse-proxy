@@ -70,13 +70,7 @@ namespace Microsoft.ReverseProxy.Core.Service.Proxy
                 throw new ReverseProxyException($"Route has no up to date information on its backend '{backend.BackendId}'. Perhaps the backend hasn't been probed yet? This can happen when a new backend is added but isn't ready to serve traffic yet.");
             }
 
-            // TODO: Set defaults properly
-            BackendConfig.BackendLoadBalancingOptions loadBalancingOptions = default;
-            var backendConfig = backend.Config.Value;
-            if (backendConfig != null)
-            {
-                loadBalancingOptions = backendConfig.LoadBalancingOptions;
-            }
+            var loadBalancingOptions = backend.Config.Value?.LoadBalancingOptions ?? default;
 
             var endpoint = _operationLogger.Execute(
                 "ReverseProxy.PickEndpoint",
