@@ -14,11 +14,11 @@ namespace Microsoft.ReverseProxy.Core.Service.Proxy
     /// </summary>
     internal class LoadBalancer : ILoadBalancer
     {
-        private readonly IRandom _random;
+        private readonly IRandomFactory _randomFactory;
 
         public LoadBalancer(IRandomFactory randomFactory)
         {
-            _random = randomFactory.CreateRandomInstance();
+            _randomFactory = randomFactory;
         }
 
         public EndpointInfo PickEndpoint(
@@ -42,12 +42,14 @@ namespace Microsoft.ReverseProxy.Core.Service.Proxy
                 case LoadBalancingMode.First:
                     return healthyEndpoints[0];
                 case LoadBalancingMode.Random:
-                    return healthyEndpoints[_random.Next(endpointCount)];
+                    var random = _randomFactory.CreateRandomInstance();
+                    return healthyEndpoints[random.Next(endpointCount)];
                 case LoadBalancingMode.PowerOfTwoChoices:
                     // Pick two, and then return the least busy. This avoids the effort of searching the whole list, but
                     // still avoids overloading a single endpoint.
-                    var firstEndpoint = healthyEndpoints[_random.Next(endpointCount)];
-                    var secondEndpoint = healthyEndpoints[_random.Next(endpointCount)];
+                    var random1 = _randomFactory.CreateRandomInstance();
+                    var firstEndpoint = healthyEndpoints[random1.Next(endpointCount)];
+                    var secondEndpoint = healthyEndpoints[random1.Next(endpointCount)];
                     return (firstEndpoint.ConcurrencyCounter.Value <= secondEndpoint.ConcurrencyCounter.Value) ? firstEndpoint : secondEndpoint;
                 case LoadBalancingMode.LeastRequests:
                     var leastRequestsEndpoint = healthyEndpoints[0];
