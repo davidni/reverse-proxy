@@ -3,15 +3,16 @@
 
 using System;
 using System.Collections.Generic;
+using System.Net;
+using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Primitives;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.ReverseProxy.Abstractions;
-using Microsoft.ReverseProxy.Middleware;
-using Microsoft.ReverseProxy.RuntimeModel;
-
+using Microsoft.ReverseProxy.Service.Proxy.Infrastructure;
 
 namespace YARP.Sample
 {
@@ -20,10 +21,6 @@ namespace YARP.Sample
     /// </summary>
     public class Startup
     {
-        private const string DEBUG_HEADER = "Debug";
-        private const string DEBUG_METADATA_KEY = "debug";
-        private const string DEBUG_VALUE = "true";
-
         /// <summary>
         /// This method gets called by the runtime. Use this method to add services to the container.
         /// </summary>
@@ -33,6 +30,9 @@ namespace YARP.Sample
             // Programatically creating route and cluster configs. This allows loading the data from an arbitrary source.
             services.AddReverseProxy()
                 .LoadFromMemory(GetRoutes(), GetClusters());
+
+            services.AddHttpContextAccessor();
+            services.AddSingleton<IProxyHttpClientFactory, DynamicDestinationsProxyClientFactory>();
         }
 
         /// <summary>
@@ -44,14 +44,7 @@ namespace YARP.Sample
             app.UseEndpoints(endpoints =>
             {
                 // We can customize the proxy pipeline and add/remove/replace steps
-                endpoints.MapReverseProxy(proxyPipeline =>
-                {
-                    // Use a custom proxy middleware, defined below
-                    proxyPipeline.Use(MyCustomProxyStep);
-                    // Don't forget to include these two middleware when you make a custom proxy pipeline (if you need them).
-                    proxyPipeline.UseAffinitizedDestinationLookup();
-                    proxyPipeline.UseProxyLoadBalancing();
-                });
+                endpoints.MapReverseProxy();
             });
         }
 
@@ -61,63 +54,70 @@ namespace YARP.Sample
             {
                 new ProxyRoute()
                 {
-                    RouteId = "route1",
-                    ClusterId = "cluster1",
-                    Match = new ProxyMatch
-                    {
-                        // Path or Hosts are required for each route. This catch-all pattern matches all request paths.
-                        Path = "{**catch-all}"
-                    }
+                    RouteId = "virtual-route-1",
+                    ClusterId = "virtual-cluster-1",
+                    Match = new ProxyMatch { Path = "/{appName}/{svcName}/{**catch-all}" }
                 }
             };
         }
         private Cluster[] GetClusters()
         {
-            var debugMetadata = new Dictionary<string, string>();
-            debugMetadata.Add(DEBUG_METADATA_KEY, DEBUG_VALUE);
-
             return new[]
             {
-                new Cluster()
+                new Cluster
                 {
-                    Id = "cluster1",
+                    Id = "virtual-cluster-1",
                     SessionAffinity = new SessionAffinityOptions { Enabled = true, Mode = "Cookie" },
                     Destinations = new Dictionary<string, Destination>(StringComparer.OrdinalIgnoreCase)
                     {
-                        { "destination1", new Destination() { Address = "https://example.com" } },
-                        { "debugdestination1", new Destination() {
-                            Address = "https://bing.com",
-                            Metadata = debugMetadata  }
-                        },
-                    }
+                        { "virtual-destination-1", new Destination { Address = "https://127.0.0.1" } },
+                    },
                 }
             };
         }
 
-
-        /// <summary>
-        /// Custom proxy step that filters destinations based on a header in the inbound request
-        /// Looks at each destination metadata, and filters in/out based on their debug flag and the inbound header
-        /// </summary>
-        public Task MyCustomProxyStep(HttpContext context, Func<Task> next)
+        private class DynamicDestinationsProxyClientFactory : IProxyHttpClientFactory
         {
-            // Can read data from the request via the context
-            var useDebugDestinations = context.Request.Headers.TryGetValue(DEBUG_HEADER, out var headerValues) && headerValues.Count == 1 && headerValues[0] == DEBUG_VALUE;
+            private readonly IHttpContextAccessor _httpContextAccessor;
 
-            // The context also stores a ReverseProxyFeature which holds proxy specific data such as the cluster, route and destinations
-            var availableDestinationsFeature = context.Features.Get<IReverseProxyFeature>();
-            var filteredDestinations = new List<DestinationInfo>();
-
-            // Filter destinations based on criteria
-            foreach (var d in availableDestinationsFeature.AvailableDestinations)
+            public DynamicDestinationsProxyClientFactory(IHttpContextAccessor httpContextAccessor)
             {
-                //Todo: Replace with a lookup of metadata - but not currently exposed correctly here
-                if (d.DestinationId.Contains("debug") == useDebugDestinations) { filteredDestinations.Add(d); }
+                _httpContextAccessor = httpContextAccessor ?? throw new ArgumentNullException(nameof(httpContextAccessor));
             }
-            availableDestinationsFeature.AvailableDestinations = filteredDestinations;
 
-            // Important - required to move to the next step in the proxy pipeline
-            return next();
+            public HttpMessageInvoker CreateClient(ProxyHttpClientContext context)
+            {
+                var inner = new SocketsHttpHandler();
+
+                var dynamicResolutionHandler = new DynamicResolutionHandler(_httpContextAccessor);
+                dynamicResolutionHandler.InnerHandler = inner;
+
+                return new HttpMessageInvoker(dynamicResolutionHandler);
+            }
+        }
+
+        private class DynamicResolutionHandler : DelegatingHandler
+        {
+            private readonly IHttpContextAccessor _httpContextAccessor;
+
+            public DynamicResolutionHandler(IHttpContextAccessor httpContextAccessor)
+            {
+                _httpContextAccessor = httpContextAccessor ?? throw new ArgumentNullException(nameof(httpContextAccessor));
+            }
+
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                var httpContext = _httpContextAccessor.HttpContext;
+                var routeData = httpContext.GetRouteData();
+
+                var appName = routeData.Values["appName"] as string;
+                var svcName = routeData.Values["svcName"] as string;
+
+                var response = new HttpResponseMessage(HttpStatusCode.OK);
+                response.Content = new StringContent($"Dynamically resolved and proxied to 'fabric:/{appName}/{svcName}' (no, not really, but you get the gist)");
+
+                return Task.FromResult(response);
+            }
         }
     }
 }
